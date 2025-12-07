@@ -137,7 +137,6 @@ class TwilioPhoneService(IPhoneService):
             record=kwargs.get("record", True),
             **{k: v for k, v in kwargs.items() if k not in ["url", "status_callback", "record"]}
         )
-        print(f"DEBUG: Call object attributes: {dir(call)}")
         return {
             "call_id": call.sid,
             "status": call.status,
@@ -152,8 +151,7 @@ class TwilioPhoneService(IPhoneService):
         try:
             call = self.client.calls(call_id).update(status="completed")
             return call.status == "completed"
-        except Exception as e:
-            print(f"Error ending call: {e}")
+        except Exception:
             return False
     
     async def get_call_status(self, call_id: str) -> Dict[str, Any]:

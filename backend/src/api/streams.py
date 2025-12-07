@@ -18,20 +18,21 @@ def log(msg):
 
 router = APIRouter(prefix="/streams", tags=["Streams"])
 
-# Deepgram WebSocket URL with parameters
-DEEPGRAM_WS_URL = (
-    "wss://api.deepgram.com/v1/listen"
-    "?model=nova-3"
-    "&language=en"
-    "&encoding=mulaw"
-    "&sample_rate=8000"
-    "&channels=1"
-    "&punctuate=true"
-    "&interim_results=true"
-    "&endpointing=500"  # 500ms silence = end of utterance
-    "&vad_events=true"  # Get speech start/end events
-    "&smart_format=true"
-)
+def get_deepgram_ws_url() -> str:
+    """Build Deepgram WebSocket URL from config settings."""
+    return (
+        "wss://api.deepgram.com/v1/listen"
+        f"?model={settings.deepgram_model}"
+        f"&language={settings.deepgram_language}"
+        f"&encoding={settings.deepgram_encoding}"
+        f"&sample_rate={settings.deepgram_sample_rate}"
+        f"&channels={settings.deepgram_channels}"
+        "&punctuate=true"
+        "&interim_results=true"
+        f"&endpointing={settings.deepgram_endpointing}"
+        "&vad_events=true"
+        "&smart_format=true"
+    )
 
 
 class ConversationState:
@@ -171,7 +172,7 @@ async def websocket_endpoint(websocket: WebSocket):
         log(f"🔌 Connecting to Deepgram...")
         
         async with websockets.connect(
-            DEEPGRAM_WS_URL,
+            get_deepgram_ws_url(),
             additional_headers={
                 "Authorization": f"Token {settings.deepgram_api_key}"
             }

@@ -16,6 +16,7 @@ class LLMProvider(str, Enum):
     """Supported LLM providers."""
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    OPENROUTER = "openrouter"
 
 
 class MessageRole(str, Enum):
@@ -421,17 +422,187 @@ class AnthropicLLMService(ILLMService):
         return json.loads(response)
 
 
+class OpenRouterLLMService(ILLMService):
+    """OpenRouter implementation of LLM service.
+
+    OpenRouter provides access to multiple LLM providers through a unified API.
+    Supports models from OpenAI, Anthropic, Google, Meta, Mistral, and more.
+    """
+
+    OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+    def __init__(self):
+        """Initialize OpenRouter client using OpenAI SDK with custom base URL."""
+        self.model = settings.openrouter_model
+        self.client = openai.AsyncOpenAI(
+            api_key=settings.openrouter_api_key,
+            base_url=self.OPENROUTER_BASE_URL
+        )
+        # Optional headers for OpenRouter rankings
+        self.extra_headers = {}
+        if settings.openrouter_site_url:
+            self.extra_headers["HTTP-Referer"] = settings.openrouter_site_url
+        if settings.openrouter_app_name:
+            self.extra_headers["X-Title"] = settings.openrouter_app_name
+
+    async def generate_response(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        **kwargs
+    ) -> str:
+        """Generate response using OpenRouter API."""
+        model = kwargs.pop("model", self.model)
+
+        response = await self.client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            extra_headers=self.extra_headers,
+            **{k: v for k, v in kwargs.items() if k not in ["response_format"]}
+        )
+        return response.choices[0].message.content
+
+    async def generate_streaming_response(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        **kwargs
+    ) -> AsyncGenerator[str, None]:
+        """Generate streaming response using OpenRouter API."""
+        model = kwargs.pop("model", self.model)
+
+        stream = await self.client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            extra_headers=self.extra_headers,
+            **{k: v for k, v in kwargs.items() if k not in ["response_format"]}
+        )
+
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+    async def summarize_conversation(
+        self,
+        conversation: str,
+        focus: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Summarize conversation using OpenRouter API."""
+        system_prompt = """You are an expert at summarizing conversations for journal and diary generation.
+        Extract the following information and return ONLY valid JSON (no markdown, no code blocks):
+        {
+            "title": "A concise title for the conversation",
+            "summary": "A comprehensive summary (2-3 paragraphs)",
+            "key_points": ["List of key points discussed (3-7 items)"],
+            "action_items": ["List of action items or tasks mentioned"],
+            "topics": ["List of main topics/themes"],
+            "sentiment": "Overall sentiment (positive/negative/neutral/mixed)",
+            "entities": ["Named entities mentioned (people, places, organizations)"]
+        }
+        """
+
+        if focus:
+            system_prompt += f"\n\nFocus specifically on: {focus}"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Please summarize the following conversation:\n\n{conversation}"}
+        ]
+
+        response = await self.generate_response(
+            messages=messages,
+            temperature=0.3,
+            **kwargs
+        )
+
+        import json
+        # Handle potential markdown wrapping
+        if "```json" in response:
+            response = response.split("```json")[1].split("```")[0].strip()
+        elif "```" in response:
+            response = response.split("```")[1].split("```")[0].strip()
+
+        return json.loads(response)
+
+    async def extract_entities(
+        self,
+        text: str,
+        **kwargs
+    ) -> List[Dict[str, str]]:
+        """Extract named entities using OpenRouter API."""
+        messages = [
+            {
+                "role": "system",
+                "content": """Extract named entities from the text. Return ONLY valid JSON (no markdown):
+                {"entities": [{"type": "PERSON|ORGANIZATION|LOCATION|DATE|EVENT|PRODUCT|OTHER", "value": "entity text"}]}"""
+            },
+            {"role": "user", "content": text}
+        ]
+
+        response = await self.generate_response(
+            messages=messages,
+            temperature=0.3,
+            **kwargs
+        )
+
+        import json
+        if "```json" in response:
+            response = response.split("```json")[1].split("```")[0].strip()
+        elif "```" in response:
+            response = response.split("```")[1].split("```")[0].strip()
+
+        result = json.loads(response)
+        return result.get("entities", [])
+
+    async def analyze_sentiment(
+        self,
+        text: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Analyze sentiment using OpenRouter API."""
+        messages = [
+            {
+                "role": "system",
+                "content": """Analyze the sentiment of the text. Return ONLY valid JSON (no markdown):
+                {"sentiment": "positive|negative|neutral|mixed", "score": 0.0-1.0, "explanation": "brief explanation"}"""
+            },
+            {"role": "user", "content": text}
+        ]
+
+        response = await self.generate_response(
+            messages=messages,
+            temperature=0.3,
+            **kwargs
+        )
+
+        import json
+        if "```json" in response:
+            response = response.split("```json")[1].split("```")[0].strip()
+        elif "```" in response:
+            response = response.split("```")[1].split("```")[0].strip()
+
+        return json.loads(response)
+
+
 class LLMServiceFactory:
     """Factory for creating LLM service instances."""
-    
+
     @staticmethod
     def create(provider: LLMProvider = LLMProvider.OPENAI) -> ILLMService:
         """
         Create an LLM service instance.
-        
+
         Args:
             provider: LLM provider to use
-            
+
         Returns:
             ILLMService implementation
         """
@@ -439,9 +610,24 @@ class LLMServiceFactory:
             return OpenAILLMService()
         elif provider == LLMProvider.ANTHROPIC:
             return AnthropicLLMService()
+        elif provider == LLMProvider.OPENROUTER:
+            return OpenRouterLLMService()
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
 
+    @staticmethod
+    def create_from_settings() -> ILLMService:
+        """Create LLM service based on settings.llm_provider."""
+        provider_str = settings.llm_provider.lower()
+        try:
+            provider = LLMProvider(provider_str)
+        except ValueError:
+            raise ValueError(
+                f"Invalid LLM_PROVIDER '{provider_str}'. "
+                f"Must be one of: {', '.join(p.value for p in LLMProvider)}"
+            )
+        return LLMServiceFactory.create(provider)
 
-# Default LLM service instance
-llm_service = LLMServiceFactory.create(LLMProvider.OPENAI)
+
+# Default LLM service instance - uses LLM_PROVIDER from settings
+llm_service = LLMServiceFactory.create_from_settings()

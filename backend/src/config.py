@@ -1,101 +1,135 @@
 """
 Configuration management for CallingJournal application.
-Loads and validates environment variables.
 
-DON'T WRITE ANY CREDENTIALS OR SECRETS HERE.
-WRITE THEM IN A .env FILE AND PYDANTIC WILL LOAD THEM FOR YOU.
+All configuration is loaded from environment variables via the .env file.
+See .env.example for documentation of all available settings.
+
+IMPORTANT: Do not add default values here. All defaults should be set in .env
 """
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
-    
+    """
+    Application settings loaded from environment variables.
+
+    All values are loaded from .env file. No defaults are set here to ensure
+    configuration is explicit and centralized in .env.
+    """
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        case_sensitive=False
+        case_sensitive=False,
+        extra="ignore"
     )
-    
+
+    # -------------------------------------------------------------------------
     # Application
-    app_name: str = "CallingJournal"
-    app_version: str = "1.0.0"
-    environment: str = "development"
-    debug: bool = True
-    api_host: str = "0.0.0.0"
-    api_port: int = 8000
-    
-    # Database
-    # database_url: str = "sqlite+aiosqlite:///./calling_journal.db"
+    # -------------------------------------------------------------------------
+    app_name: str
+    app_version: str
+    environment: str
+    debug: bool
+    api_host: str
+    api_port: int
+
+    # -------------------------------------------------------------------------
+    # Database (PostgreSQL)
+    # -------------------------------------------------------------------------
     db_host: str
-    db_port: int = 5432
+    db_port: int
     db_name: str
     db_user: str
     db_password: str
 
     @property
     def database_url(self) -> str:
-        """
-        SQLAlchemy/PostgreSQL async URL constructed from DB_* env vars.
-
-        Example:
-        postgresql+asyncpg://user:password@host:5432/dbname
-        """
+        """Construct async PostgreSQL URL from individual DB settings."""
         return (
             f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
-
+    # -------------------------------------------------------------------------
     # JWT Authentication
+    # -------------------------------------------------------------------------
     secret_key: str
-    algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60 * 24  # 1 day
-    
+    algorithm: str
+    access_token_expire_minutes: int
+
+    # -------------------------------------------------------------------------
     # LLM Configuration
-    openai_api_key: str = ""
-    openai_model: str = "gpt-4-turbo-preview"
-    openai_embedding_model: str = "text-embedding-3-small"  # OPENAI_EMBEDDING_MODEL
+    # -------------------------------------------------------------------------
+    llm_provider: str
 
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-3-opus-20240229"
+    # OpenAI
+    openai_api_key: str
+    openai_model: str
+    openai_embedding_model: str
 
+    # Anthropic
+    anthropic_api_key: str
+    anthropic_model: str
+
+    # OpenRouter
+    openrouter_api_key: str
+    openrouter_model: str
+    openrouter_site_url: str
+    openrouter_app_name: str
+
+    # -------------------------------------------------------------------------
     # Vector Database (Pinecone)
-    pinecone_api_key: str = ""  # PINECONE_API_KEY
-    pinecone_index_name: str = "journal-embeddings"  # PINECONE_INDEX_NAME
+    # -------------------------------------------------------------------------
+    pinecone_api_key: str
+    pinecone_index_name: str
 
-    
-    # Phone Service
-    twilio_account_sid: str = ""
-    twilio_auth_token: str = ""
-    twilio_phone_number: str = "+17752547971"
-    # vonage_api_key: str = ""
-    # vonage_api_secret: str = ""
-    # vonage_phone_number: str = ""
-    
-    # Transcription
-    # Using local Whisper or SpeechRecognition - no API key needed
-    whisper_model: str = "base"  # Options: tiny, base, small, medium, large
-    
-    # Deepgram (for streaming transcription)
-    deepgram_api_key: str = ""
-    deepgram_model: str = "nova-3"  # Options: nova-3, nova-2, whisper, etc.
-    
+    # -------------------------------------------------------------------------
+    # Phone Service (Twilio)
+    # -------------------------------------------------------------------------
+    twilio_account_sid: str
+    twilio_auth_token: str
+    twilio_phone_number: str
+
+    # -------------------------------------------------------------------------
+    # Transcription - Whisper (Local)
+    # -------------------------------------------------------------------------
+    whisper_model: str
+
+    # -------------------------------------------------------------------------
+    # Transcription - Deepgram (Streaming)
+    # -------------------------------------------------------------------------
+    deepgram_api_key: str
+    deepgram_model: str
+    deepgram_language: str
+    deepgram_encoding: str
+    deepgram_sample_rate: int
+    deepgram_channels: int
+    deepgram_endpointing: int
+
+    # -------------------------------------------------------------------------
     # Redis
-    redis_url: str = "redis://localhost:6379/0"
-    
+    # -------------------------------------------------------------------------
+    redis_url: str
+
+    # -------------------------------------------------------------------------
     # File Storage
-    audio_storage_path: str = "./data/audio"
-    log_storage_path: str = "./data/logs"
-    journal_storage_path: str = "./data/journals"
-    
+    # -------------------------------------------------------------------------
+    audio_storage_path: str
+    log_storage_path: str
+    journal_storage_path: str
+
+    # -------------------------------------------------------------------------
     # Logging
-    log_level: str = "INFO"
-    log_file: str = "./logs/app.log"
-    
+    # -------------------------------------------------------------------------
+    log_level: str
+    log_file: str
+
+    # -------------------------------------------------------------------------
     # CORS
-    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:8080", "http://localhost:80"]
+    # -------------------------------------------------------------------------
+    cors_origins: List[str]
 
 
 # Global settings instance

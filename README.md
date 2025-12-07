@@ -1,128 +1,289 @@
 # CallingJournal
 
-AI-powered calling journal system for conversation logging, summarization, and local domain knowledge extraction.
+An AI-powered conversational diary and mental wellness application that transforms daily reflection into a natural, voice-based experience.
 
+## Overview
 
-## Environment Setup
-python version required: 3.12
+CallingJournal addresses the common pain points of traditional diary apps:
+- **Low consistency** - Users forget to write entries when busy
+- **High dropout rate** - Once skipped, motivation declines
+- **Limited emotional engagement** - Writing feels like a chore
 
-Install dependencies in your virtual environment:
-   ```bash
-   pip install -r requirements.txt
-   ```
+Our solution: An AI companion that calls you at your preferred time, engages in natural conversation, and automatically generates journal entries from your voice conversations.
 
-## Module Responsibilities
+## Features
 
-### Config Layer
-- **settings.py**: Loads environment variables, provides Settings dataclass
+### Current Implementation
 
-### Models Layer
-- **entities.py**: Pure data classes representing domain objects
-  - `User`: User profile with phone, timezone, schedule
-  - `Conversation`: Chat session with transcript
-  - `Journal`: Generated diary entry with emotions and topics
-  - `Message`: Single chat message
-  - `EmotionScore`: Detected emotions with confidence scores
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Phone Calls (Twilio) | Implemented | Outbound calls via Twilio API |
+| Real-time Transcription | Implemented | Deepgram Nova-3 with VAD |
+| Batch Transcription | Implemented | Local Whisper for recordings |
+| Conversation Logging | Implemented | Turn-based conversation storage |
+| Journal Generation | Implemented | LLM-powered summarization |
+| Entity Extraction | Implemented | Named entity recognition |
+| Sentiment Analysis | Implemented | Emotional state detection |
+| Knowledge Base | Implemented | Semantic search with Pinecone |
+| User Authentication | Implemented | JWT-based auth |
+| Multi-LLM Support | Implemented | OpenAI, Anthropic, OpenRouter |
 
-### Database Layer
-- **connection.py**: PostgreSQL connection pooling and query execution
+### Planned Features (Not Yet Implemented)
 
-### DAO Layer (Data Access Objects)
-Each DAO provides full CRUD operations:
+| Feature | Priority | Description |
+|---------|----------|-------------|
+| Scheduled Calls | High | User-specified call times |
+| LLM Voice Response | High | AI responds with TTS during calls |
+| Customizable AI Persona | Medium | Tone & style customization |
+| Mental Health Insights | Medium | Trend analysis over time |
+| Personalized Prompts | Medium | Based on previous entries |
+| Mobile App | Low | Native iOS/Android apps |
+| B2B Dashboard | Low | Enterprise wellness programs |
 
-| DAO | Key Methods |
-|-----|-------------|
-| `UserDAO` | create, get_by_id, get_by_phone, update, deactivate, delete |
-| `ConversationDAO` | create, get_by_user_id, update_transcript, complete_conversation, delete_expired |
-| `JournalDAO` | create, get_by_topic, get_by_high_emotion, get_emotion_averages, search |
+---
 
-### Services Layer
-- **llm_service.py**: LangChain integration with GPT-4o
-  - Chat with conversation history
-  - Streaming responses
-  - Journal summary generation
-  - Topic extraction
-  - Emotion analysis
+## Tech Stack
 
-- **embedding_service.py**: Vector operations
-  - Generate embeddings (text-embedding-3-small)
-  - Store/search similar vectors (mock implementation)
-  - RAG context retrieval
+### Backend
 
-- **journal_service.py**: Journal business logic
-  - Create journal from conversation
-  - Generate markdown files
-  - Search journals semantically
+| Technology | Purpose |
+|------------|---------|
+| **FastAPI** | Async web framework with automatic OpenAPI docs |
+| **PostgreSQL** | Primary database with async support (asyncpg) |
+| **SQLAlchemy 2.0** | Async ORM for database operations |
+| **Alembic** | Database migrations |
+| **Twilio** | Phone call initiation and media streams |
+| **Deepgram** | Real-time streaming transcription with VAD |
+| **OpenAI Whisper** | Local batch transcription |
+| **OpenAI / Anthropic / OpenRouter** | LLM for conversation and summarization |
+| **Pinecone** | Vector database for semantic search |
+| **Redis + Celery** | Background task queue |
+| **JWT (python-jose)** | Authentication tokens |
 
-- **conversation_service.py**: Orchestrates conversation flow
-  - Start/end sessions
-  - Process messages
-  - Trigger journal generation
+### Frontend
+
+| Technology | Purpose |
+|------------|---------|
+| **React 19** | UI framework |
+| **Vite** | Build tool and dev server |
+| **Tailwind CSS 4** | Utility-first styling |
+
+### Infrastructure
+
+| Technology | Purpose |
+|------------|---------|
+| **Docker** | Containerization (PostgreSQL, Redis) |
+| **ngrok** | Local development tunneling for webhooks |
+
+---
+
+## Project Structure
+
+```
+CallingJournal/
+├── backend/
+│   ├── main.py                 # FastAPI application entry point
+│   ├── requirements.txt        # Python dependencies
+│   ├── .env.example           # Environment configuration template
+│   ├── src/
+│   │   ├── config.py          # Settings loader (from .env)
+│   │   ├── database.py        # Async database connection
+│   │   ├── db_models.py       # SQLAlchemy ORM models
+│   │   ├── schemas.py         # Pydantic request/response schemas
+│   │   ├── auth.py            # JWT authentication
+│   │   ├── api/               # API route handlers
+│   │   │   ├── auth.py        # Auth endpoints
+│   │   │   ├── calls.py       # Call management
+│   │   │   ├── journals.py    # Journal CRUD
+│   │   │   ├── knowledge.py   # Knowledge base
+│   │   │   ├── llm.py         # LLM interaction
+│   │   │   ├── streams.py     # Twilio WebSocket streams
+│   │   │   └── webhooks.py    # Twilio/Vonage callbacks
+│   │   ├── services/          # Business logic
+│   │   │   ├── phone_service.py
+│   │   │   ├── llm_service.py
+│   │   │   ├── journal_service.py
+│   │   │   ├── transcription_service.py
+│   │   │   └── embedding_service.py
+│   │   └── utils/             # Helpers
+│   ├── test/                  # Unit tests
+│   └── docs/                  # Documentation
+│       └── SETUP.md           # Development setup guide
+│
+├── frontend/
+│   ├── package.json           # Node dependencies
+│   ├── vite.config.js         # Vite configuration
+│   ├── tailwind.config.js     # Tailwind configuration
+│   └── src/
+│       ├── main.jsx           # React entry point
+│       ├── App.jsx            # Main app with routing
+│       ├── Landing.jsx        # Login/landing page
+│       ├── ChatInterface.jsx  # Chat UI
+│       ├── Calendar.jsx       # Journal calendar view
+│       ├── AITalk.jsx         # Voice conversation UI
+│       └── ProfileMenu.jsx    # User profile
+│
+└── PROJECT.md                 # Product Requirements Document
+```
+
+---
 
 ## Quick Start
 
-### 1. Install dependencies
+### Prerequisites
+
+- Python 3.12+
+- Node.js 18+
+- PostgreSQL 15+
+- Redis 7+
+- ngrok (for Twilio webhooks)
+
+### Backend Setup
+
 ```bash
+cd backend
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
-```
 
-### 2. Set up environment
-```bash
+# Configure environment
 cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
+# Edit .env with your API keys (see .env.example for documentation)
+
+# Start the server
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 3. Set up database (optional)
+### Frontend Setup
+
 ```bash
-# Connect to PostgreSQL and run:
-psql -U postgres -d calling_journal -f db_schema.sql
+cd frontend
+
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
 ```
 
-### 4. Run the demo
-```bash
-python main.py
-```
+### Required API Keys
 
-## Demo Usage
+| Service | Purpose | Get Key |
+|---------|---------|---------|
+| OpenAI / Anthropic / OpenRouter | LLM | Choose one provider |
+| Twilio | Phone calls | https://console.twilio.com |
+| Deepgram | Real-time transcription | https://console.deepgram.com |
+| Pinecone (optional) | Vector search | https://www.pinecone.io |
 
-```
-🌙 AI-Powered Conversational Diary
-   Mental Wellness Check-in Demo
-============================================================
+See `backend/.env.example` for complete configuration documentation.
 
-Type your messages and press Enter.
-Type 'end' to finish the conversation and generate journal.
-Type 'quit' to exit without saving.
-------------------------------------------------------------
+---
 
-🤖 Assistant: Hi there! How was your day today?
+## API Documentation
 
-👤 You: It was stressful, had a big meeting
+When running in development mode, API documentation is available at:
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
 
-🤖 Assistant: I hear you. Work meetings can be really draining...
+### Key Endpoints
 
-👤 You: end
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/auth/register` | User registration |
+| POST | `/auth/token` | Login (OAuth2) |
+| POST | `/calls` | Initiate outbound call |
+| GET | `/calls` | List call history |
+| POST | `/journals` | Create journal entry |
+| GET | `/journals` | List journals |
+| POST | `/journals/search` | Search journals |
+| POST | `/llm/chat` | Chat with LLM |
+| WS | `/streams/twilio` | Twilio media stream |
 
-📔 Conversation Summary
-============================================================
-  Conversation ID: 1
-  Duration: 5 minutes
-  Journal ID: 1
-  Journal Path: ./journals/2025-01-20/journal_demo.md
-============================================================
-```
+---
 
-## Database Schema
+## Development Status
 
-See `db_schema.sql` for complete DDL including:
-- `users` table
-- `conversations` table (temporary, 7-30 day retention)
-- `journals` table (permanent)
-- Indexes and mock data
+### Completed (MVP Phase 1)
+
+- [x] Phone call initiation via Twilio
+- [x] Real-time voice transcription (Deepgram)
+- [x] Batch transcription (Whisper)
+- [x] Conversation storage and retrieval
+- [x] Journal generation from calls
+- [x] LLM-powered summarization
+- [x] Entity and sentiment extraction
+- [x] User authentication (JWT)
+- [x] Basic frontend UI (React)
+- [x] Multi-provider LLM support (OpenAI, Anthropic, OpenRouter)
+
+### In Progress
+
+- [ ] LLM voice response during calls (TTS integration)
+- [ ] Frontend-backend integration
+- [ ] Call scheduling system
+
+### Not Started
+
+- [ ] Scheduled call initiation (user-specified times)
+- [ ] Customizable AI persona (tone & style)
+- [ ] Mental health trend analysis
+- [ ] Personalized prompts based on history
+- [ ] Push notifications
+- [ ] Mobile apps (iOS/Android)
+- [ ] B2B enterprise features
+- [ ] Psychological wellness resources integration
+
+---
 
 ## Architecture Notes
 
-1. **Mock Mode**: Runs without OpenAI API key using pre-defined responses
-2. **Real Mode**: Uses GPT-4o with streaming responses
-3. **RAG Context**: Past journal summaries are retrieved for personalization
-4. **Emotion Detection**: LLM-based emotion analysis (can be replaced with MentalBERT)
+### Call Flow
+
+1. User initiates call via API or scheduled trigger
+2. Twilio places outbound call to user's phone
+3. User answers, Twilio streams audio via WebSocket
+4. Deepgram transcribes audio in real-time with VAD
+5. (TODO) LLM generates responses, TTS plays to user
+6. On call end, journal is generated from transcript
+7. Knowledge extracted and indexed for future context
+
+### LLM Provider Abstraction
+
+The application supports multiple LLM providers through a unified interface:
+
+```
+LLM_PROVIDER=openai      # Direct OpenAI API
+LLM_PROVIDER=anthropic   # Direct Anthropic API
+LLM_PROVIDER=openrouter  # 100+ models via OpenRouter
+```
+
+Configure in `.env` - only the selected provider's API key is required.
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests: `pytest`
+5. Submit a pull request
+
+---
+
+## License
+
+[MIT License](LICENSE)
+
+---
+
+## Acknowledgments
+
+- [FastAPI](https://fastapi.tiangolo.com/) - Modern Python web framework
+- [Twilio](https://www.twilio.com/) - Phone call infrastructure
+- [Deepgram](https://deepgram.com/) - Speech-to-text API
+- [OpenAI](https://openai.com/) - GPT models and Whisper

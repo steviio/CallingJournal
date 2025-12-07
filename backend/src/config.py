@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     twilio_phone_number: str
 
     # -------------------------------------------------------------------------
+    # Text-to-Speech (TTS)
+    # -------------------------------------------------------------------------
+    tts_provider: str  # openai, elevenlabs
+    tts_voice: str  # Voice ID or name
+    tts_model: str  # TTS model
+    elevenlabs_api_key: str
+
+    # -------------------------------------------------------------------------
     # Transcription - Whisper (Local)
     # -------------------------------------------------------------------------
     whisper_model: str

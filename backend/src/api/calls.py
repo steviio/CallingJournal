@@ -7,12 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from src.database import get_db
+from src.logging_config import get_logger
 from src.schemas import CallCreate, CallResponse, CallUpdate, MessageResponse
 from src.db_models import User, Call, CallStatus
 from src.api.auth import get_current_user
 from src.services.phone_service import phone_service
 from src.services.journal_service import journal_service
 from src.services.transcription_service import transcription_service
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/calls", tags=["Calls"])
 
@@ -306,7 +309,7 @@ async def transcribe_call(
                     call.raw_transcript = transcription_result.get("text", "")
                     await session.commit()
             except Exception as e:
-                print(f"Background transcription error: {e}")
+                logger.error(f"Background transcription error: {e}", exc_info=True)
             break
     
     background_tasks.add_task(_transcribe)

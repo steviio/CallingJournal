@@ -12,6 +12,30 @@ from src.db_models import Call, Conversation, Journal, KnowledgeBase, Conversati
 from src.services.llm_service import ILLMService, llm_service as default_llm_service
 
 
+# Prompt for generating diary-style journal entries from user's perspective
+DIARY_GENERATION_PROMPT = """Based on the following conversation between a user and their AI diary companion,
+generate a personal diary entry written from the USER's perspective (first person).
+
+The diary entry should:
+1. Be written as if the user wrote it themselves ("I felt...", "Today I...")
+2. Capture the key events, thoughts, and feelings they shared
+3. Include any insights or realizations from the conversation
+4. Be warm and personal in tone
+5. Be 2-4 paragraphs long
+
+Return ONLY valid JSON (no markdown code blocks):
+{
+    "title": "A meaningful title for this entry",
+    "content": "The diary entry text written in first person...",
+    "mood": "The overall mood (e.g., reflective, grateful, anxious, hopeful, tired)",
+    "key_points": ["Key moment or thought 1", "Key moment or thought 2"],
+    "gratitude": ["Something they're grateful for if mentioned"],
+    "action_items": ["Any intention or goal for tomorrow if discussed"],
+    "topics": ["Main topics discussed"],
+    "sentiment": "positive/negative/neutral/mixed"
+}"""
+
+
 class JournalService:
     """Service for managing journal entries and conversation logs."""
     
@@ -87,31 +111,31 @@ class JournalService:
     ) -> Journal:
         """
         Generate a journal entry from a call conversation.
-        
+
         Args:
             db: Database session
             call_id: Call ID
             user_id: User ID
             focus: Optional focus area for summarization
-            
+
         Returns:
             Created Journal object
         """
         # Get conversation history
         conversations = await self.get_conversation_history(db, call_id)
-        
+
         # Build full conversation text
         conversation_text = "\n".join([
             f"{conv.turn.value.upper()}: {conv.content}"
             for conv in conversations
         ])
-        
+
         # Generate summary using LLM
         summary_data = await self.llm_service.summarize_conversation(
             conversation=conversation_text,
             focus=focus
         )
-        
+
         # Create journal entry
         journal = Journal(
             user_id=user_id,
@@ -126,10 +150,90 @@ class JournalService:
             topics=summary_data.get("topics", []),
             sentiment=summary_data.get("sentiment", "neutral")
         )
-        
+
         db.add(journal)
         await db.flush()
-        
+
+        return journal
+
+    async def generate_diary_from_transcript(
+        self,
+        db: AsyncSession,
+        user_id: int,
+        call_id: Optional[int],
+        transcript: str
+    ) -> Journal:
+        """
+        Generate a diary-style journal entry from a conversation transcript.
+        Written from the user's first-person perspective.
+
+        Args:
+            db: Database session
+            user_id: User ID
+            call_id: Optional Call ID to link
+            transcript: Full conversation transcript (AI: ... User: ...)
+
+        Returns:
+            Created Journal object
+        """
+        import json as json_module
+
+        # Build prompt for diary generation
+        prompt = f"""{DIARY_GENERATION_PROMPT}
+
+Conversation transcript:
+{transcript}"""
+
+        messages = [
+            {"role": "system", "content": "You are a skilled writer who transforms conversations into personal diary entries."},
+            {"role": "user", "content": prompt}
+        ]
+
+        response = await self.llm_service.generate_response(
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1000
+        )
+
+        # Parse JSON response
+        try:
+            # Handle potential markdown wrapping
+            if "```json" in response:
+                response = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                response = response.split("```")[1].split("```")[0].strip()
+            diary_data = json_module.loads(response)
+        except json_module.JSONDecodeError:
+            # Fallback if JSON parsing fails
+            diary_data = {
+                "title": f"Reflections - {datetime.now(timezone.utc).strftime('%B %d, %Y')}",
+                "content": response,
+                "mood": "reflective",
+                "key_points": [],
+                "gratitude": [],
+                "action_items": [],
+                "topics": [],
+                "sentiment": "neutral"
+            }
+
+        # Create journal entry
+        journal = Journal(
+            user_id=user_id,
+            call_id=call_id,
+            title=diary_data.get("title", f"Diary - {datetime.now(timezone.utc).date()}"),
+            summary=diary_data.get("content", ""),  # Diary content goes in summary
+            key_points=diary_data.get("key_points", []),
+            action_items=diary_data.get("action_items", []),
+            tags=diary_data.get("topics", []) + [diary_data.get("mood", "")],
+            full_content=transcript,
+            entities=diary_data.get("gratitude", []),  # Store gratitude as entities
+            topics=diary_data.get("topics", []),
+            sentiment=diary_data.get("sentiment", "neutral")
+        )
+
+        db.add(journal)
+        await db.flush()
+
         return journal
     
     async def get_journal(

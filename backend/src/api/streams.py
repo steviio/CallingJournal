@@ -1,22 +1,27 @@
 """
 WebSocket endpoints for Twilio Media Streams.
-Uses Deepgram for real-time streaming transcription with VAD.
+Implements bidirectional conversation with real-time transcription (Deepgram),
+LLM response generation, and TTS playback.
 """
 import json
 import asyncio
 import base64
-import sys
-import audioop
+from typing import Optional, Dict, Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import websockets
-from src.config import settings
+from sqlalchemy import select
 
-def log(msg):
-    """Print and flush immediately."""
-    print(msg, flush=True)
-    sys.stdout.flush()
+from src.config import settings
+from src.logging_config import get_logger
+from src.database import async_session_factory
+from src.db_models import Call, Journal, Conversation, ConversationTurn
+from src.services.conversation_service import conversation_service, ConversationContext
+from src.services.tts_service import tts_service
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/streams", tags=["Streams"])
+
 
 def get_deepgram_ws_url() -> str:
     """Build Deepgram WebSocket URL from config settings."""
@@ -35,38 +40,37 @@ def get_deepgram_ws_url() -> str:
     )
 
 
-class ConversationState:
-    """Track conversation state."""
+class CallState:
+    """Track call state for bidirectional conversation."""
+
     def __init__(self):
-        self.transcript_buffer = ""      # Current utterance being built
-        self.all_utterances = []         # List of completed utterances
+        self.transcript_buffer = ""
+        self.all_utterances = []
         self.utterance_count = 0
         self.is_speaking = False
-        
+        self.is_ai_speaking = False
+        self.context: Optional[ConversationContext] = None
+        self.stream_sid: Optional[str] = None
+        self.call_sid: Optional[str] = None
+        self.pending_response: Optional[asyncio.Task] = None
 
-async def send_beep_to_twilio(twilio_ws: WebSocket, stream_sid: str):
-    """Send a beep sound to acknowledge receipt."""
-    import math
-    
-    # Generate beep
-    num_samples = int(8000 * 0.3)  # 300ms
-    samples = []
-    for i in range(num_samples):
-        t = i / 8000
-        value = int(16000 * math.sin(2 * math.pi * 600 * t))
-        value = max(-32768, min(32767, value))
-        samples.append(value)
-    
-    pcm = b''.join(s.to_bytes(2, 'little', signed=True) for s in samples)
-    mulaw = audioop.lin2ulaw(pcm, 2)
-    
-    # Send in chunks
-    chunk_size = 160
-    for i in range(0, len(mulaw), chunk_size):
-        chunk = mulaw[i:i+chunk_size]
+
+async def send_audio_to_twilio(twilio_ws: WebSocket, stream_sid: str, audio_data: bytes):
+    """
+    Send audio data to Twilio in chunks.
+
+    Args:
+        twilio_ws: Twilio WebSocket connection
+        stream_sid: Twilio stream SID
+        audio_data: Audio bytes in mulaw 8kHz format
+    """
+    chunk_size = 160  # 20ms of audio at 8kHz
+    for i in range(0, len(audio_data), chunk_size):
+        chunk = audio_data[i:i + chunk_size]
+        # Pad if needed
         if len(chunk) < chunk_size:
             chunk = chunk + b'\xff' * (chunk_size - len(chunk))
-        
+
         media_message = {
             "event": "media",
             "streamSid": stream_sid,
@@ -75,131 +79,269 @@ async def send_beep_to_twilio(twilio_ws: WebSocket, stream_sid: str):
             }
         }
         await twilio_ws.send_text(json.dumps(media_message))
-        await asyncio.sleep(0.02)
-    
-    log(f"   🔔 Sent beep")
+        await asyncio.sleep(0.02)  # 20ms pacing
 
 
-async def deepgram_receiver(dg_ws, state: ConversationState, twilio_ws: WebSocket, stream_sid: str):
-    """Receive transcriptions from Deepgram."""
+async def speak_response(twilio_ws: WebSocket, state: CallState, text: str):
+    """
+    Generate TTS and send to Twilio.
+
+    Args:
+        twilio_ws: Twilio WebSocket connection
+        state: Call state
+        text: Text to speak
+    """
+    state.is_ai_speaking = True
+    logger.info(f"[{state.call_sid}] AI response: {text}")
+
+    try:
+        # Generate TTS audio
+        audio_data = await tts_service.synthesize(text)
+
+        # Send to Twilio
+        await send_audio_to_twilio(twilio_ws, state.stream_sid, audio_data)
+
+    except Exception as e:
+        logger.error(f"[{state.call_sid}] TTS error: {e}", exc_info=True)
+    finally:
+        state.is_ai_speaking = False
+
+
+async def process_user_utterance(twilio_ws: WebSocket, state: CallState, utterance: str):
+    """
+    Process a completed user utterance and generate AI response.
+
+    Args:
+        twilio_ws: Twilio WebSocket connection
+        state: Call state
+        utterance: User's transcribed speech
+    """
+    if not state.context:
+        return
+
+    logger.info(f"[{state.call_sid}] User said: {utterance}")
+
+    # Generate AI response
+    try:
+        response = await conversation_service.generate_response(state.context, utterance)
+        await speak_response(twilio_ws, state, response)
+
+        # Check if conversation is ending
+        if state.context.is_ending:
+            logger.info(f"[{state.call_sid}] User requested to end conversation")
+
+    except Exception as e:
+        logger.error(f"[{state.call_sid}] Error generating response: {e}", exc_info=True)
+        await speak_response(twilio_ws, state, "I'm sorry, I had trouble understanding. Could you please repeat that?")
+
+
+async def save_diary_to_database(
+    call_sid: str,
+    diary_entry: Dict[str, Any],
+    context: ConversationContext
+) -> Optional[int]:
+    """
+    Save diary entry and conversation to database.
+
+    Args:
+        call_sid: Twilio call SID (external_call_id)
+        diary_entry: Generated diary data
+        context: Conversation context with messages
+
+    Returns:
+        Journal ID if saved successfully, None otherwise
+    """
+    async with async_session_factory() as db:
+        try:
+            # Find the call record by external_call_id
+            result = await db.execute(
+                select(Call).where(Call.external_call_id == call_sid)
+            )
+            call = result.scalar_one_or_none()
+
+            if not call:
+                logger.warning(f"[{call_sid}] Call record not found in database, cannot save diary")
+                return None
+
+            # Save conversation turns
+            for i, msg in enumerate(context.messages):
+                if msg.role == "system":
+                    continue  # Skip system messages
+
+                turn = ConversationTurn.USER if msg.role == "user" else ConversationTurn.ASSISTANT
+                conversation = Conversation(
+                    call_id=call.id,
+                    turn=turn,
+                    content=msg.content,
+                    timestamp=msg.timestamp,
+                    order_index=i
+                )
+                db.add(conversation)
+
+            # Create journal entry
+            journal = Journal(
+                user_id=call.user_id,
+                call_id=call.id,
+                title=diary_entry.get("title", f"Diary - {context.started_at.strftime('%B %d, %Y')}"),
+                summary=diary_entry.get("content", ""),
+                key_points=diary_entry.get("key_points", []),
+                action_items=diary_entry.get("action_items", []),
+                tags=diary_entry.get("topics", []) + [diary_entry.get("mood", "")],
+                full_content=context.get_transcript(),
+                entities=diary_entry.get("gratitude", []),
+                topics=diary_entry.get("topics", []),
+                sentiment=diary_entry.get("sentiment", "neutral")
+            )
+            db.add(journal)
+
+            # Update call with transcript
+            call.raw_transcript = context.get_transcript()
+
+            await db.commit()
+            await db.refresh(journal)
+
+            logger.info(f"[{call_sid}] Diary saved to database: journal_id={journal.id}")
+            return journal.id
+
+        except Exception as e:
+            logger.error(f"[{call_sid}] Failed to save diary to database: {e}", exc_info=True)
+            await db.rollback()
+            return None
+
+
+async def deepgram_receiver(dg_ws, state: CallState, twilio_ws: WebSocket):
+    """Receive transcriptions from Deepgram and trigger AI responses."""
     try:
         async for message in dg_ws:
             data = json.loads(message)
-            
-            # Handle different message types
             msg_type = data.get("type", "")
-            
+
             if msg_type == "SpeechStarted":
-                if not state.is_speaking:
-                    log(f"🎤 Speech started")
+                if not state.is_speaking and not state.is_ai_speaking:
+                    logger.debug(f"[{state.call_sid}] User started speaking")
                     state.is_speaking = True
-                    
+
+                    # Cancel any pending AI response if user interrupts
+                    if state.pending_response and not state.pending_response.done():
+                        state.pending_response.cancel()
+
             elif msg_type == "Results":
                 channel = data.get("channel", {})
                 alternatives = channel.get("alternatives", [])
-                
+
                 if alternatives:
                     transcript = alternatives[0].get("transcript", "")
                     is_final = data.get("is_final", False)
                     speech_final = data.get("speech_final", False)
-                    
+
                     if transcript:
                         if is_final:
-                            # Final result for this segment
                             state.transcript_buffer += transcript + " "
-                            log(f"   📝 [{transcript}]")
-                        else:
-                            # Interim result - just for display
-                            log(f"   ... {transcript}")
-                    
-                    # speech_final = true means endpoint detected (user stopped speaking)
+                            logger.debug(f"[{state.call_sid}] Transcript segment: {transcript}")
+
+                    # speech_final = endpoint detected (user stopped speaking)
                     if speech_final and state.transcript_buffer.strip():
                         state.utterance_count += 1
                         final_text = state.transcript_buffer.strip()
                         state.all_utterances.append(final_text)
-                        
-                        log(f"")
-                        log(f"🔇 Utterance #{state.utterance_count} complete:")
-                        log(f"   \"{final_text}\"")
-                        
-                        # Send beep to acknowledge
-                        await send_beep_to_twilio(twilio_ws, stream_sid)
-                        log(f"   ✅ Ready for next utterance")
-                        log(f"")
-                        
+
+                        logger.debug(f"[{state.call_sid}] Utterance #{state.utterance_count} complete")
+
+                        # Process utterance and generate response
+                        state.pending_response = asyncio.create_task(
+                            process_user_utterance(twilio_ws, state, final_text)
+                        )
+
                         # Reset buffer
                         state.transcript_buffer = ""
                         state.is_speaking = False
-                        
+
             elif msg_type == "Metadata":
-                log(f"📊 Deepgram connected: model={data.get('model_info', {}).get('name', 'unknown')}")
-                
+                model_name = data.get('model_info', {}).get('name', 'unknown')
+                logger.info(f"[{state.call_sid}] Deepgram connected: model={model_name}")
+
             elif msg_type == "UtteranceEnd":
-                # Alternative endpoint detection
                 if state.transcript_buffer.strip():
                     state.utterance_count += 1
                     final_text = state.transcript_buffer.strip()
                     state.all_utterances.append(final_text)
-                    
-                    log(f"🔇 [UtteranceEnd] #{state.utterance_count}: \"{final_text}\"")
-                    await send_beep_to_twilio(twilio_ws, stream_sid)
-                    
+
+                    logger.debug(f"[{state.call_sid}] UtteranceEnd #{state.utterance_count}")
+
+                    state.pending_response = asyncio.create_task(
+                        process_user_utterance(twilio_ws, state, final_text)
+                    )
+
                     state.transcript_buffer = ""
                     state.is_speaking = False
-                    
+
     except websockets.exceptions.ConnectionClosed:
-        log(f"🔌 Deepgram connection closed")
+        logger.info(f"[{state.call_sid}] Deepgram connection closed")
     except Exception as e:
-        log(f"❌ Deepgram receiver error: {e}")
+        logger.error(f"[{state.call_sid}] Deepgram receiver error: {e}", exc_info=True)
 
 
 @router.websocket("/twilio")
 async def websocket_endpoint(websocket: WebSocket):
     """
-    Handle Twilio Media Streams with Deepgram real-time transcription.
+    Handle Twilio Media Streams with bidirectional AI conversation.
+
+    Flow:
+    1. Twilio connects and starts streaming audio
+    2. Audio is forwarded to Deepgram for real-time transcription
+    3. When user finishes speaking (VAD), LLM generates response
+    4. Response is converted to speech (TTS) and sent back to Twilio
+    5. Conversation continues until user ends or hangs up
+    6. On disconnect, diary entry is generated from conversation
     """
-    log("=" * 60)
-    log("🎙️ New call incoming...")
+    logger.info("New Twilio WebSocket connection incoming")
     await websocket.accept()
-    log("✅ Twilio WebSocket accepted")
-    
-    state = ConversationState()
-    stream_sid = None
-    call_sid = None
-    
+    logger.debug("Twilio WebSocket accepted")
+
+    state = CallState()
+
     try:
         # Connect to Deepgram
-        log(f"🔌 Connecting to Deepgram...")
-        
+        logger.debug("Connecting to Deepgram...")
+
         async with websockets.connect(
             get_deepgram_ws_url(),
             additional_headers={
                 "Authorization": f"Token {settings.deepgram_api_key}"
             }
         ) as dg_ws:
-            log(f"✅ Deepgram connected")
-            
-            # Wait for Twilio to send 'start' event first
+            logger.debug("Deepgram WebSocket connected")
+
+            # Wait for Twilio to send 'start' event
             while True:
                 data = await websocket.receive_text()
                 message = json.loads(data)
                 event = message.get('event', 'unknown')
-                
+
                 if event == 'connected':
-                    log(f"✅ Twilio protocol: {message.get('protocol')}")
+                    logger.debug(f"Twilio protocol: {message.get('protocol')}")
                 elif event == 'start':
                     start_data = message.get('start', {})
-                    stream_sid = start_data.get('streamSid')
-                    call_sid = start_data.get('callSid')
-                    log(f"✅ Stream started: {call_sid}")
-                    log(f"   Format: mulaw 8kHz mono")
+                    state.stream_sid = start_data.get('streamSid')
+                    state.call_sid = start_data.get('callSid')
+                    logger.info(f"[{state.call_sid}] Call started")
+
+                    # Start conversation
+                    state.context = conversation_service.start_conversation(
+                        call_id=state.call_sid
+                    )
+
+                    # Send initial greeting
+                    greeting = await conversation_service.generate_greeting(state.context)
+                    await speak_response(websocket, state, greeting)
+
                     break
-            
-            # Create tasks for bidirectional communication
+
+            # Create task for receiving Deepgram transcriptions
             receiver_task = asyncio.create_task(
-                deepgram_receiver(dg_ws, state, websocket, stream_sid)
+                deepgram_receiver(dg_ws, state, websocket)
             )
-            
+
             # Forward audio from Twilio to Deepgram
             media_count = 0
             try:
@@ -207,46 +349,71 @@ async def websocket_endpoint(websocket: WebSocket):
                     data = await websocket.receive_text()
                     message = json.loads(data)
                     event = message.get('event', 'unknown')
-                    
+
                     if event == 'media':
-                        media_count += 1
-                        payload = message['media']['payload']
-                        audio_bytes = base64.b64decode(payload)
-                        await dg_ws.send(audio_bytes)
-                        
-                        if media_count % 200 == 0:
-                            log(f"📦 Packets: {media_count}")
-                            
+                        # Don't forward audio while AI is speaking (echo cancellation)
+                        if not state.is_ai_speaking:
+                            media_count += 1
+                            payload = message['media']['payload']
+                            audio_bytes = base64.b64decode(payload)
+                            await dg_ws.send(audio_bytes)
+
+                            if media_count % 500 == 0:
+                                logger.debug(f"[{state.call_sid}] Audio packets processed: {media_count}")
+
                     elif event == 'stop':
-                        log(f"🛑 Stream stopped (packets: {media_count})")
+                        logger.info(f"[{state.call_sid}] Stream stopped (packets: {media_count})")
                         break
-                        
+
             except WebSocketDisconnect:
-                log(f"⚠️ Twilio disconnected (packets: {media_count})")
-            
+                logger.info(f"[{state.call_sid}] Twilio disconnected (packets: {media_count})")
+
             # Cancel receiver task
             receiver_task.cancel()
             try:
                 await receiver_task
             except asyncio.CancelledError:
-                # Task cancellation is expected and safe to ignore here.
                 pass
-            
-            # Close Deepgram connection gracefully
+
+            # Close Deepgram connection
             await dg_ws.send(json.dumps({"type": "CloseStream"}))
-            
+
     except websockets.exceptions.InvalidStatusCode as e:
-        log(f"❌ Deepgram auth failed: {e}")
+        logger.error(f"Deepgram auth failed: {e}")
     except Exception as e:
-        log(f"❌ Error: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Stream error: {type(e).__name__}: {e}", exc_info=True)
     finally:
-        # Print conversation summary
-        log(f"")
-        log(f"📋 Conversation Summary ({state.utterance_count} utterances):")
-        for i, text in enumerate(state.all_utterances, 1):
-            log(f"   {i}. {text}")
-        log(f"")
-        log(f"🔚 Call ended")
-        log("=" * 60)
+        # End conversation and generate diary
+        if state.context:
+            context = conversation_service.end_conversation(state.call_sid)
+            if context and context.messages:
+                logger.info(f"[{state.call_sid}] Conversation ended with {state.utterance_count} utterances")
+
+                # Log utterances at debug level
+                for i, text in enumerate(state.all_utterances, 1):
+                    logger.debug(f"[{state.call_sid}] Utterance {i}: {text}")
+
+                # Generate and save diary entry
+                try:
+                    logger.info(f"[{state.call_sid}] Generating diary entry...")
+                    diary_entry = await conversation_service.generate_diary_entry(context)
+                    logger.info(
+                        f"[{state.call_sid}] Diary generated: "
+                        f"title='{diary_entry.get('title', 'Untitled')}', "
+                        f"mood='{diary_entry.get('mood', 'unknown')}'"
+                    )
+
+                    # Save diary entry to database
+                    journal_id = await save_diary_to_database(
+                        call_sid=state.call_sid,
+                        diary_entry=diary_entry,
+                        context=context
+                    )
+
+                    if journal_id:
+                        logger.info(f"[{state.call_sid}] Diary persisted: journal_id={journal_id}")
+
+                except Exception as e:
+                    logger.error(f"[{state.call_sid}] Error generating/saving diary: {e}", exc_info=True)
+
+        logger.info(f"[{state.call_sid or 'unknown'}] Call ended")

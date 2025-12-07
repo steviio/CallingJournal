@@ -4,6 +4,9 @@ from typing import Optional
 from langchain_openai import OpenAIEmbeddings
 from pinecone import Pinecone, ServerlessSpec
 from src.config import settings, Settings
+from src.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class EmbeddingService:
@@ -29,7 +32,7 @@ class EmbeddingService:
         if self.settings.pinecone_api_key:
             self._init_pinecone()
         else:
-            print("Warning: PINECONE_API_KEY not set. Using mock vector store.")
+            logger.warning("PINECONE_API_KEY not set. Using mock vector store.")
 
     def _init_pinecone(self):
         """Initialize Pinecone client and index."""
@@ -43,7 +46,7 @@ class EmbeddingService:
             existing_indexes = [idx.name for idx in self._pinecone_client.list_indexes()]
 
             if index_name not in existing_indexes:
-                print(f"Creating Pinecone index: {index_name}")
+                logger.info(f"Creating Pinecone index: {index_name}")
                 self._pinecone_client.create_index(
                     name=index_name,
                     dimension=self.EMBEDDING_DIMENSION,
@@ -53,15 +56,15 @@ class EmbeddingService:
                         region="us-east-1"
                     )
                 )
-                print(f"Index '{index_name}' created successfully.")
+                logger.info(f"Pinecone index '{index_name}' created successfully")
 
             # Connect to index
             self._index = self._pinecone_client.Index(index_name)
-            print(f"Connected to Pinecone index: {index_name}")
+            logger.info(f"Connected to Pinecone index: {index_name}")
 
         except Exception as e:
-            print(f"Error initializing Pinecone: {e}")
-            print("Falling back to mock vector store.")
+            logger.error(f"Error initializing Pinecone: {e}", exc_info=True)
+            logger.warning("Falling back to mock vector store")
             self._index = None
 
     @property
@@ -252,7 +255,7 @@ class EmbeddingService:
                     del self._mock_vector_store[embedding_id]
             return True
         except Exception as e:
-            print(f"Error deleting embedding {embedding_id}: {e}")
+            logger.error(f"Error deleting embedding {embedding_id}: {e}", exc_info=True)
             return False
 
     def delete_embeddings_by_user(self, user_id: int) -> bool:
@@ -287,7 +290,7 @@ class EmbeddingService:
 
             return True
         except Exception as e:
-            print(f"Error deleting embeddings for user {user_id}: {e}")
+            logger.error(f"Error deleting embeddings for user {user_id}: {e}", exc_info=True)
             return False
 
     # ==================== RAG HELPER METHODS ====================

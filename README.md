@@ -19,21 +19,23 @@ Our solution: An AI companion that calls you at your preferred time, engages in 
 |---------|--------|-------------|
 | Phone Calls (Twilio) | Implemented | Outbound calls via Twilio API |
 | Real-time Transcription | Implemented | Deepgram Nova-3 with VAD |
+| AI Voice Response | Implemented | LLM responses with TTS playback |
+| Bidirectional Conversation | Implemented | Full voice-to-voice dialogue |
+| Diary Generation | Implemented | First-person diary from conversations |
 | Batch Transcription | Implemented | Local Whisper for recordings |
 | Conversation Logging | Implemented | Turn-based conversation storage |
-| Journal Generation | Implemented | LLM-powered summarization |
 | Entity Extraction | Implemented | Named entity recognition |
 | Sentiment Analysis | Implemented | Emotional state detection |
 | Knowledge Base | Implemented | Semantic search with Pinecone |
 | User Authentication | Implemented | JWT-based auth |
 | Multi-LLM Support | Implemented | OpenAI, Anthropic, OpenRouter |
+| Multi-TTS Support | Implemented | OpenAI TTS, ElevenLabs |
 
 ### Planned Features (Not Yet Implemented)
 
 | Feature | Priority | Description |
 |---------|----------|-------------|
 | Scheduled Calls | High | User-specified call times |
-| LLM Voice Response | High | AI responds with TTS during calls |
 | Customizable AI Persona | Medium | Tone & style customization |
 | Mental Health Insights | Medium | Trend analysis over time |
 | Personalized Prompts | Medium | Based on previous entries |
@@ -211,18 +213,20 @@ When running in development mode, API documentation is available at:
 
 - [x] Phone call initiation via Twilio
 - [x] Real-time voice transcription (Deepgram)
+- [x] AI voice responses with TTS (OpenAI / ElevenLabs)
+- [x] Bidirectional voice conversation
+- [x] Diary-style journal generation (first-person perspective)
 - [x] Batch transcription (Whisper)
 - [x] Conversation storage and retrieval
-- [x] Journal generation from calls
 - [x] LLM-powered summarization
 - [x] Entity and sentiment extraction
 - [x] User authentication (JWT)
 - [x] Basic frontend UI (React)
 - [x] Multi-provider LLM support (OpenAI, Anthropic, OpenRouter)
+- [x] Multi-provider TTS support (OpenAI, ElevenLabs)
 
 ### In Progress
 
-- [ ] LLM voice response during calls (TTS integration)
 - [ ] Frontend-backend integration
 - [ ] Call scheduling system
 
@@ -247,9 +251,10 @@ When running in development mode, API documentation is available at:
 2. Twilio places outbound call to user's phone
 3. User answers, Twilio streams audio via WebSocket
 4. Deepgram transcribes audio in real-time with VAD
-5. (TODO) LLM generates responses, TTS plays to user
-6. On call end, journal is generated from transcript
-7. Knowledge extracted and indexed for future context
+5. LLM generates responses, TTS plays audio to user
+6. Conversation continues bidirectionally
+7. On call end, diary entry is generated (first-person perspective)
+8. Knowledge extracted and indexed for future context
 
 ### LLM Provider Abstraction
 
